@@ -1,0 +1,325 @@
+diff --git a/camoucfg/MaskConfig.hpp b/camoucfg/MaskConfig.hpp
+index 88de995476..1a82d4b04b 100644
+--- a/camoucfg/MaskConfig.hpp
++++ b/camoucfg/MaskConfig.hpp
+@@ -20,30 +20,14 @@ Written by daijro.
+ #include <algorithm>
+ 
+ // Add Mozilla Preferences support
+-#ifdef MOZILLA_INTERNAL_API
+ #include "mozilla/Preferences.h"
+ #include "nsString.h"
+-#endif
+ 
+ #ifdef _WIN32
+ #  include <windows.h>
+ #endif
+ 
+-// Global flag to control whether to use preferences
+-namespace mozilla {
+-  static bool gUseFingerprintPrefs = false;
+-  
+-  // Initialize preferences usage
+-  static void InitFingerprintPrefs() {
+-    static bool initialized = false;
+-    if (!initialized) {
+-#ifdef MOZILLA_INTERNAL_API
+-      gUseFingerprintPrefs = Preferences::GetBool("camoufox.fingerprint.usePrefs", false);
+-#endif
+-      initialized = true;
+-    }
+-  }
+-}
++// Direct preference reading without global state
+ 
+ namespace MaskConfig {
+ 
+@@ -70,27 +54,23 @@ inline std::optional<std::string> get_env_utf8(const std::string& name) {
+ 
+ inline const nlohmann::json& GetJson() {
+   static nlohmann::json jsonConfig;
+-  static bool initialized = false;
++  static bool envInitialized = false;
+   
+-  // Check if we should reload from preferences
+-#ifdef MOZILLA_INTERNAL_API
+-  mozilla::InitFingerprintPrefs();
+-  if (mozilla::gUseFingerprintPrefs) {
+-    nsAutoCString prefValue;
+-    nsresult rv = mozilla::Preferences::GetCString("camoufox.fingerprint.config", prefValue);
+-    if (NS_SUCCEEDED(rv) && !prefValue.IsEmpty()) {
+-      if (nlohmann::json::accept(prefValue.get())) {
+-        jsonConfig = nlohmann::json::parse(prefValue.get());
+-        return jsonConfig;
+-      } else {
+-        printf_stderr("ERROR: Failed to parse fingerprint config from preferences\n");
+-      }
++  // Always try preferences first
++  nsAutoCString prefValue;
++  nsresult rv = mozilla::Preferences::GetCString("camoufox.fingerprint.config", prefValue);
++  if (NS_SUCCEEDED(rv) && !prefValue.IsEmpty()) {
++    if (nlohmann::json::accept(prefValue.get())) {
++      jsonConfig = nlohmann::json::parse(prefValue.get());
++      printf_stderr("DEBUG: GetJson() loaded from preferences\n");
++      return jsonConfig;
++    } else {
++      printf_stderr("ERROR: Failed to parse fingerprint config from preferences\n");
+     }
+   }
+-#endif
+ 
+-  // If already initialized from env and not using prefs, return cached value
+-  if (initialized && !mozilla::gUseFingerprintPrefs) {
++  // Fall back to environment variables
++  if (envInitialized) {
+     return jsonConfig;
+   }
+ 
+@@ -116,7 +96,7 @@ inline const nlohmann::json& GetJson() {
+ 
+     if (jsonString.empty()) {
+       jsonConfig = nlohmann::json{};
+-      initialized = true;
++      envInitialized = true;
+       return;
+     }
+ 
+@@ -124,26 +104,20 @@ inline const nlohmann::json& GetJson() {
+     if (!nlohmann::json::accept(jsonString)) {
+       printf_stderr("ERROR: Invalid JSON passed to CAMOU_CONFIG!\n");
+       jsonConfig = nlohmann::json{};
+-      initialized = true;
++      envInitialized = true;
+       return;
+     }
+ 
+     jsonConfig = nlohmann::json::parse(jsonString);
+-    initialized = true;
++    envInitialized = true;
+   });
+ 
+   return jsonConfig;
+ }
+ 
+-// Helper function to get value from preferences
+-#ifdef MOZILLA_INTERNAL_API
++// Helper function to get value from preferences - direct reading
+ template<typename T>
+ inline std::optional<T> GetFromPreference(const std::string& key) {
+-  mozilla::InitFingerprintPrefs();
+-  if (!mozilla::gUseFingerprintPrefs) {
+-    return std::nullopt;
+-  }
+-  
+   nsAutoCString prefName("camoufox.fingerprint.");
+   prefName.Append(key.c_str());
+   
+@@ -151,6 +125,7 @@ inline std::optional<T> GetFromPreference(const std::string& key) {
+     nsAutoCString value;
+     nsresult rv = mozilla::Preferences::GetCString(prefName.get(), value);
+     if (NS_SUCCEEDED(rv)) {
++      printf_stderr("DEBUG: GetFromPreference(%s) from preference: %s\n", key.c_str(), value.get());
+       return std::string(value.get());
+     }
+   } else if constexpr (std::is_integral_v<T>) {
+@@ -158,6 +133,7 @@ inline std::optional<T> GetFromPreference(const std::string& key) {
+     int32_t value;
+     nsresult rv = mozilla::Preferences::GetInt(prefName.get(), &value);
+     if (NS_SUCCEEDED(rv)) {
++      printf_stderr("DEBUG: GetFromPreference(%s) from preference: %d\n", key.c_str(), value);
+       // Check for unsigned types and ensure non-negative values
+       if constexpr (std::is_unsigned_v<T>) {
+         if (value >= 0) {
+@@ -168,32 +144,35 @@ inline std::optional<T> GetFromPreference(const std::string& key) {
+       }
+     }
+   }
++
++  printf_stderr("DEBUG: GetFromPreference(%s) not found\n", key.c_str());
+   return std::nullopt;
+ }
+-#endif
+ 
+ inline bool HasKey(const std::string& key, const nlohmann::json& data) {
+-#ifdef MOZILLA_INTERNAL_API
+-  // Try preferences first if enabled
+-  mozilla::InitFingerprintPrefs();
+-  if (mozilla::gUseFingerprintPrefs) {
+-    nsAutoCString prefName("camoufox.fingerprint.");
+-    prefName.Append(key.c_str());
+-    return mozilla::Preferences::HasUserValue(prefName.get());
++  // Try preferences first
++
++  nsAutoCString prefName("camoufox.fingerprint.");
++  prefName.Append(key.c_str());
++  if (mozilla::Preferences::HasUserValue(prefName.get())) {
++    return true;
+   }
+-#endif
++
+   return data.contains(key);
+ }
+ 
+ inline std::optional<std::string> GetString(const std::string& key) {
+-#ifdef MOZILLA_INTERNAL_API
+   if (auto prefValue = GetFromPreference<std::string>(key)) {
+     return prefValue;
+   }
+-#endif
+   const auto& data = GetJson();
+-  if (!HasKey(key, data)) return std::nullopt;
+-  return data[key].get<std::string>();
++  if (!HasKey(key, data)) {
++    printf_stderr("DEBUG: GetString(%s) not found\n", key.c_str());
++    return std::nullopt;
++  }
++  auto result = data[key].get<std::string>();
++  printf_stderr("DEBUG: GetString(%s) from JSON: %s\n", key.c_str(), result.c_str());
++  return result;
+ }
+ 
+ inline std::vector<std::string> GetStringList(const std::string& key) {
+@@ -217,11 +196,9 @@ inline std::vector<std::string> GetStringListLower(const std::string& key) {
+ 
+ template <typename T>
+ inline std::optional<T> GetUintImpl(const std::string& key) {
+-#ifdef MOZILLA_INTERNAL_API
+   if (auto prefValue = GetFromPreference<T>(key)) {
+     return prefValue;
+   }
+-#endif
+   const auto& data = GetJson();
+   if (!HasKey(key, data)) return std::nullopt;
+   if (data[key].is_number_unsigned()) return data[key].get<T>();
+@@ -239,11 +216,9 @@ inline std::optional<uint32_t> GetUint32(const std::string& key) {
+ }
+ 
+ inline std::optional<int32_t> GetInt32(const std::string& key) {
+-#ifdef MOZILLA_INTERNAL_API
+   if (auto prefValue = GetFromPreference<int32_t>(key)) {
+     return prefValue;
+   }
+-#endif
+   const auto& data = GetJson();
+   if (!HasKey(key, data)) return std::nullopt;
+   if (data[key].is_number_integer()) return data[key].get<int32_t>();
+@@ -252,22 +227,20 @@ inline std::optional<int32_t> GetInt32(const std::string& key) {
+ }
+ 
+ inline std::optional<double> GetDouble(const std::string& key) {
+-#ifdef MOZILLA_INTERNAL_API
+-  mozilla::InitFingerprintPrefs();
+-  if (mozilla::gUseFingerprintPrefs) {
+-    nsAutoCString prefName("camoufox.fingerprint.");
+-    prefName.Append(key.c_str());
+-    // Firefox doesn't have native double preferences, use string
+-    nsAutoCString value;
+-    if (NS_SUCCEEDED(mozilla::Preferences::GetCString(prefName.get(), value))) {
+-      char* endptr;
+-      double result = std::strtod(value.get(), &endptr);
+-      if (endptr != value.get() && *endptr == '\0') {
+-        return result;
+-      }
++  // Try preference first - Firefox doesn't have native double preferences, use string
++
++  nsAutoCString prefName("camoufox.fingerprint.");
++  prefName.Append(key.c_str());
++  nsAutoCString value;
++  if (NS_SUCCEEDED(mozilla::Preferences::GetCString(prefName.get(), value))) {
++    char* endptr;
++    double result = std::strtod(value.get(), &endptr);
++    if (endptr != value.get() && *endptr == '\0') {
++      printf_stderr("DEBUG: GetDouble(%s) from preference: %f\n", key.c_str(), result);
++      return result;
+     }
+   }
+-#endif
++
+   const auto& data = GetJson();
+   if (!HasKey(key, data)) return std::nullopt;
+   if (data[key].is_number_float()) return data[key].get<double>();
+@@ -278,16 +251,15 @@ inline std::optional<double> GetDouble(const std::string& key) {
+ }
+ 
+ inline std::optional<bool> GetBool(const std::string& key) {
+-#ifdef MOZILLA_INTERNAL_API
+-  mozilla::InitFingerprintPrefs();
+-  if (mozilla::gUseFingerprintPrefs) {
+-    nsAutoCString prefName("camoufox.fingerprint.");
+-    prefName.Append(key.c_str());
+-    if (mozilla::Preferences::HasUserValue(prefName.get())) {
+-      return mozilla::Preferences::GetBool(prefName.get(), false);
+-    }
++  // Try preference first
++
++  nsAutoCString prefName("camoufox.fingerprint.");
++  prefName.Append(key.c_str());
++  if (mozilla::Preferences::HasUserValue(prefName.get())) {
++    bool result = mozilla::Preferences::GetBool(prefName.get(), false);
++    printf_stderr("DEBUG: GetBool(%s) from preference: %d\n", key.c_str(), result);
++    return result;
+   }
+-#endif
+   const auto& data = GetJson();
+   if (!HasKey(key, data)) return std::nullopt;
+   if (data[key].is_boolean()) return data[key].get<bool>();
+diff --git a/intl/components/moz.build b/intl/components/moz.build
+index 28c221136e..fe8c232dd7 100644
+--- a/intl/components/moz.build
++++ b/intl/components/moz.build
+@@ -91,4 +91,6 @@ DEFINES["MOZ_HAS_MOZGLUE"] = True
+ Library("intlcomponents")
+ 
+ # DOM Mask
+-LOCAL_INCLUDES += ["/camoucfg"]
+\ No newline at end of file
++LOCAL_INCLUDES += ["/camoucfg"]
++# Enable MOZILLA_INTERNAL_API for accessing Firefox Preferences API
++DEFINES["MOZILLA_INTERNAL_API"] = True
+diff --git a/juggler/protocol/BrowserHandler.js b/juggler/protocol/BrowserHandler.js
+index 81aeee48b8..64195813a6 100644
+--- a/juggler/protocol/BrowserHandler.js
++++ b/juggler/protocol/BrowserHandler.js
+@@ -198,6 +198,42 @@ class BrowserHandler {
+     this._targetRegistry.browserContextForId(browserContextId).downloadOptions = nullToUndefined(downloadOptions);
+   }
+ 
++  ['Browser.setCamoufoxPrefs'](params) {
++    // 设置 camoufox.fingerprint.* 系列 preferences
++    if (!params || typeof params !== 'object') {
++      return;
++    }
++    
++    // 首先确保启用动态指纹功能
++    Services.prefs.setBoolPref('camoufox.fingerprint.usePrefs', true);
++    
++    // 遍历所有参数并设置相应的 preference
++    for (const [key, value] of Object.entries(params)) {
++      const prefName = `camoufox.fingerprint.${key}`;
++      
++      if (value === null || value === undefined) {
++        // 清除 preference
++        if (Services.prefs.prefHasUserValue(prefName)) {
++          Services.prefs.clearUserPref(prefName);
++        }
++      } else if (typeof value === 'boolean') {
++        Services.prefs.setBoolPref(prefName, value);
++      } else if (typeof value === 'string') {
++        Services.prefs.setStringPref(prefName, value);
++      } else if (typeof value === 'number') {
++        if (Number.isInteger(value)) {
++          Services.prefs.setIntPref(prefName, value);
++        } else {
++          // 浮点数作为字符串存储
++          Services.prefs.setStringPref(prefName, String(value));
++        }
++      } else if (typeof value === 'object') {
++        // 复杂对象转为 JSON 字符串
++        Services.prefs.setStringPref(prefName, JSON.stringify(value));
++      }
++    }
++  }
++
+   async ['Browser.setGeolocationOverride']({browserContextId, geolocation}) {
+     await this._targetRegistry.browserContextForId(browserContextId).applySetting('geolocation', nullToUndefined(geolocation));
+   }
