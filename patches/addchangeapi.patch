@@ -1,0 +1,141 @@
+diff --git a/camoucfg/MaskConfig.hpp b/camoucfg/MaskConfig.hpp
+index c2541634d2..063da152e0 100644
+--- a/camoucfg/MaskConfig.hpp
++++ b/camoucfg/MaskConfig.hpp
+@@ -14,6 +14,8 @@ Written by daijro.
+ #include <cstdlib>
+ #include <cstdio>
+ #include <mutex>
++#include <shared_mutex>
++#include <atomic>
+ #include <variant>
+ #include <cstddef>
+ #include <vector>
+@@ -25,6 +27,30 @@ Written by daijro.
+ 
+ namespace MaskConfig {
+ 
++// 线程安全容器：所有线程只读，更新时原子替换
++inline std::shared_ptr<nlohmann::json> gConfig{std::make_shared<nlohmann::json>()};
++inline std::shared_mutex gCfgMutex;     // 读多写少
++
++// 内部复用的解析函数
++inline bool ParseAndStore(const std::string& jsonStr) {
++  if (!nlohmann::json::accept(jsonStr)) return false;
++  
++  // 解析新配置
++  nlohmann::json newConfig = nlohmann::json::parse(jsonStr);
++  
++  // 原子更新内容而不是替换整个对象
++  std::unique_lock lock(gCfgMutex);
++  *gConfig = std::move(newConfig);
++  
++  printf_stderr("MaskConfig: Updated configuration successfully\n");
++  return true;
++}
++
++// JS 侧调用的入口：失败返回 false
++inline bool Reload(const std::string& jsonStr) { 
++  return ParseAndStore(jsonStr); 
++}
++
+ // Function to get the value of an environment variable as a UTF-8 string.
+ inline std::optional<std::string> get_env_utf8(const std::string& name) {
+ #ifdef _WIN32
+@@ -48,8 +74,8 @@ inline std::optional<std::string> get_env_utf8(const std::string& name) {
+ 
+ inline const nlohmann::json& GetJson() {
+   static std::once_flag initFlag;
+-  static nlohmann::json jsonConfig;
+ 
++  // 初始化：从环境变量加载（保持向后兼容）
+   std::call_once(initFlag, []() {
+     std::string jsonString;
+     int index = 1;
+@@ -69,22 +95,16 @@ inline const nlohmann::json& GetJson() {
+       if (originalConfig) jsonString = *originalConfig;
+     }
+ 
+-    if (jsonString.empty()) {
+-      jsonConfig = nlohmann::json{};
+-      return;
+-    }
+-
+-    // Validate
+-    if (!nlohmann::json::accept(jsonString)) {
+-      printf_stderr("ERROR: Invalid JSON passed to CAMOU_CONFIG!\n");
+-      jsonConfig = nlohmann::json{};
+-      return;
++    if (!jsonString.empty()) {
++      if (!ParseAndStore(jsonString)) {
++        printf_stderr("ERROR: Invalid JSON passed to CAMOU_CONFIG!\n");
++      }
+     }
+-
+-    jsonConfig = nlohmann::json::parse(jsonString);
+   });
+ 
+-  return jsonConfig;
++  // 返回当前配置（线程安全读取）
++  std::shared_lock lock(gCfgMutex);
++  return *gConfig;
+ }
+ 
+ inline bool HasKey(const std::string& key, const nlohmann::json& data) {
+diff --git a/dom/base/ChromeUtils.cpp b/dom/base/ChromeUtils.cpp
+index 39e8db7a3d..87a0a80fde 100644
+--- a/dom/base/ChromeUtils.cpp
++++ b/dom/base/ChromeUtils.cpp
+@@ -2627,4 +2627,15 @@ already_AddRefed<Promise> ChromeUtils::GetGMPContentDecryptionModuleInformation(
+   return domPromise.forget();
+ }
+ 
++/* static */
++void ChromeUtils::CamouUpdateConfig(GlobalObject& aGlobal, const nsAString& aJsonText) {
++  NS_ConvertUTF16toUTF8 utf8(aJsonText);
++  if (!MaskConfig::Reload(utf8.get())) {
++    // 抛 JS TypeError，让调用方知道 JSON 有问题
++    ErrorResult rv;
++    rv.ThrowTypeError("Invalid JSON for camouUpdateConfig");
++    rv.SuppressException();
++  }
++}
++
+ }  // namespace mozilla::dom
+diff --git a/dom/base/ChromeUtils.h b/dom/base/ChromeUtils.h
+index 4f2fdb0d49..0870938641 100644
+--- a/dom/base/ChromeUtils.h
++++ b/dom/base/ChromeUtils.h
+@@ -346,6 +346,12 @@ class ChromeUtils {
+                                      long aFromY, long aToX, long aToY,
+                                      nsTArray<int32_t>& aPoints);
+ 
++  /**
++   * Update Camoufox configuration at runtime.
++   * @param aJsonText A JSON string with configuration values
++   */
++  static void CamouUpdateConfig(GlobalObject& aGlobal, const nsAString& aJsonText);
++
+   static bool ShouldResistFingerprinting(
+       GlobalObject& aGlobal, JSRFPTarget aTarget,
+       const Nullable<uint64_t>& aOverriddenFingerprintingSettings);
+diff --git a/dom/chrome-webidl/ChromeUtils.webidl b/dom/chrome-webidl/ChromeUtils.webidl
+index cbb2ed81cb..75b7db9cb3 100644
+--- a/dom/chrome-webidl/ChromeUtils.webidl
++++ b/dom/chrome-webidl/ChromeUtils.webidl
+@@ -817,6 +817,15 @@ partial namespace ChromeUtils {
+    */
+   sequence<long> camouGetMouseTrajectory(long fromX, long fromY, long toX, long toY);
+ 
++  /**
++   * Replace current Camoufox configuration at runtime.
++   *
++   * @param jsonText  A JSON string with the same schema as CAMOU_CONFIG.
++   *                  Throws TypeError if invalid JSON.
++   */
++  [ChromeOnly]
++  undefined camouUpdateConfig(DOMString jsonText);
++
+   /**
+    * Get a list of all possible Utility process Actor Names ; mostly useful to
+    * perform testing and ensure about:processes display is sound and misses no
