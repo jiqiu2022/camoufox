@@ -1,0 +1,233 @@
+diff --git a/camoucfg/MaskConfig.hpp b/camoucfg/MaskConfig.hpp
+index 063da152e0..1ef910093c 100644
+--- a/camoucfg/MaskConfig.hpp
++++ b/camoucfg/MaskConfig.hpp
+@@ -74,6 +74,7 @@ inline std::optional<std::string> get_env_utf8(const std::string& name) {
+ 
+ inline const nlohmann::json& GetJson() {
+   static std::once_flag initFlag;
++  static nlohmann::json staticConfig; // 保持原始的静态配置
+ 
+   // 初始化：从环境变量加载（保持向后兼容）
+   std::call_once(initFlag, []() {
+@@ -95,16 +96,31 @@ inline const nlohmann::json& GetJson() {
+       if (originalConfig) jsonString = *originalConfig;
+     }
+ 
+-    if (!jsonString.empty()) {
+-      if (!ParseAndStore(jsonString)) {
+-        printf_stderr("ERROR: Invalid JSON passed to CAMOU_CONFIG!\n");
+-      }
++    if (jsonString.empty()) {
++      staticConfig = nlohmann::json{};
++      return;
++    }
++
++    // Validate
++    if (!nlohmann::json::accept(jsonString)) {
++      printf_stderr("ERROR: Invalid JSON passed to CAMOU_CONFIG!\n");
++      staticConfig = nlohmann::json{};
++      return;
+     }
++
++    staticConfig = nlohmann::json::parse(jsonString);
+   });
+ 
+-  // 返回当前配置（线程安全读取）
+-  std::shared_lock lock(gCfgMutex);
+-  return *gConfig;
++  // 如果有动态配置，优先返回动态配置
++  {
++    std::shared_lock lock(gCfgMutex);
++    if (gConfig && !gConfig->empty()) {
++      return *gConfig;
++    }
++  }
++
++  // 否则返回静态配置
++  return staticConfig;
+ }
+ 
+ inline bool HasKey(const std::string& key, const nlohmann::json& data) {
+diff --git a/dom/base/ChromeUtils.cpp b/dom/base/ChromeUtils.cpp
+index 87a0a80fde..167e9262d5 100644
+--- a/dom/base/ChromeUtils.cpp
++++ b/dom/base/ChromeUtils.cpp
+@@ -7,9 +7,14 @@
+ #include "ChromeUtils.h"
+ #include "MaskConfig.hpp"
+ #include "MouseTrajectories.hpp"
++#include "Navigator.h"
+ 
+ #include "JSOracleParent.h"
+ #include "ThirdPartyUtil.h"
++#include "nsIWindowMediator.h"
++#include "nsServiceManagerUtils.h"
++#include "nsIHttpProtocolHandler.h"
++#include "nsPIDOMWindow.h"
+ #include "js/CallAndConstruct.h"  // JS::Call
+ #include "js/ColumnNumber.h"  // JS::TaggedColumnNumberOneOrigin, JS::ColumnNumberOneOrigin
+ #include "js/CharacterEncoding.h"
+@@ -2635,6 +2640,67 @@ void ChromeUtils::CamouUpdateConfig(GlobalObject& aGlobal, const nsAString& aJso
+     ErrorResult rv;
+     rv.ThrowTypeError("Invalid JSON for camouUpdateConfig");
+     rv.SuppressException();
++    return;
++  }
++  
++  // 直接发送 user-agent 更新通知
++  nsCOMPtr<nsIObserverService> obsService = 
++      mozilla::services::GetObserverService();
++  if (obsService) {
++    obsService->NotifyObservers(nullptr, "user-agent-changed", nullptr);
++  }
++  
++  // 简单通知所有Navigator对象配置已更新
++  nsCOMPtr<nsIWindowMediator> mediator = 
++      do_GetService(NS_WINDOWMEDIATOR_CONTRACTID);
++  if (mediator) {
++    nsCOMPtr<nsISimpleEnumerator> windowEnum;
++    mediator->GetEnumerator(nullptr, getter_AddRefs(windowEnum));
++    if (windowEnum) {
++      bool hasMore;
++      while (NS_SUCCEEDED(windowEnum->HasMoreElements(&hasMore)) && hasMore) {
++        nsCOMPtr<nsISupports> window;
++        windowEnum->GetNext(getter_AddRefs(window));
++        nsCOMPtr<nsPIDOMWindowOuter> domWindow = do_QueryInterface(window);
++        if (domWindow && domWindow->GetCurrentInnerWindow()) {
++          RefPtr<Navigator> nav = domWindow->GetCurrentInnerWindow()->Navigator();
++          if (nav) {
++            nav->OnConfigUpdated();
++          }
++        }
++      }
++    }
++  }
++}
++
++/* static */
++void ChromeUtils::CamouRefreshNavigator(GlobalObject& aGlobal) {
++  // 枚举所有窗口并强制清空Navigator缓存
++  nsCOMPtr<nsIWindowMediator> mediator = 
++      do_GetService(NS_WINDOWMEDIATOR_CONTRACTID);
++  if (!mediator) {
++    return;
++  }
++  
++  nsCOMPtr<nsISimpleEnumerator> windowEnum;
++  mediator->GetEnumerator(nullptr, getter_AddRefs(windowEnum));
++  if (!windowEnum) {
++    return;
++  }
++  
++  bool hasMore;
++  while (NS_SUCCEEDED(windowEnum->HasMoreElements(&hasMore)) && hasMore) {
++    nsCOMPtr<nsISupports> window;
++    windowEnum->GetNext(getter_AddRefs(window));
++    nsCOMPtr<nsPIDOMWindowOuter> domWindow = do_QueryInterface(window);
++    
++    if (domWindow && domWindow->GetCurrentInnerWindow()) {
++      nsPIDOMWindowInner* innerWindow = domWindow->GetCurrentInnerWindow();
++      
++      // 使用新的公共方法清空Navigator缓存
++      innerWindow->ClearNavigatorCache();
++      printf_stderr("Cleared Navigator cache for window\n");
++    }
+   }
+ }
+ 
+diff --git a/dom/base/ChromeUtils.h b/dom/base/ChromeUtils.h
+index 0870938641..2020dcbe5a 100644
+--- a/dom/base/ChromeUtils.h
++++ b/dom/base/ChromeUtils.h
+@@ -352,6 +352,11 @@ class ChromeUtils {
+    */
+   static void CamouUpdateConfig(GlobalObject& aGlobal, const nsAString& aJsonText);
+ 
++  /**
++   * Force refresh Navigator objects after config update.
++   */
++  static void CamouRefreshNavigator(GlobalObject& aGlobal);
++
+   static bool ShouldResistFingerprinting(
+       GlobalObject& aGlobal, JSRFPTarget aTarget,
+       const Nullable<uint64_t>& aOverriddenFingerprintingSettings);
+diff --git a/dom/base/Navigator.cpp b/dom/base/Navigator.cpp
+index 5078661829..b83ce21353 100644
+--- a/dom/base/Navigator.cpp
++++ b/dom/base/Navigator.cpp
+@@ -266,6 +266,14 @@ void Navigator::Invalidate() {
+   mClipboard = nullptr;
+ }
+ 
++void Navigator::OnConfigUpdated() {
++  // 当Camoufox配置更新时调用此方法
++  // 由于Navigator属性在WebIDL层面可能被缓存，我们需要特殊处理
++  
++  // 这里采用简单的方式：输出调试信息，实际的缓存清除在ChromeUtils中处理
++  printf_stderr("Navigator::OnConfigUpdated called\n");
++}
++
+ void Navigator::GetUserAgent(nsAString& aUserAgent, CallerType aCallerType,
+                              ErrorResult& aRv) const {
+   if (auto value = MaskConfig::GetString("navigator.userAgent"))
+diff --git a/dom/base/Navigator.h b/dom/base/Navigator.h
+index 46ead1f32e..1ded817474 100644
+--- a/dom/base/Navigator.h
++++ b/dom/base/Navigator.h
+@@ -98,6 +98,7 @@ class Navigator final : public nsISupports, public nsWrapperCache {
+   NS_DECL_CYCLE_COLLECTION_WRAPPERCACHE_CLASS(Navigator)
+ 
+   void Invalidate();
++  void OnConfigUpdated();  // Handle Camoufox config updates
+   nsPIDOMWindowInner* GetWindow() const { return mWindow; }
+ 
+   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
+diff --git a/dom/base/nsGlobalWindowInner.cpp b/dom/base/nsGlobalWindowInner.cpp
+index 7ef493156f..8bb4e96ec0 100644
+--- a/dom/base/nsGlobalWindowInner.cpp
++++ b/dom/base/nsGlobalWindowInner.cpp
+@@ -2417,6 +2417,13 @@ Navigator* nsPIDOMWindowInner::Navigator() {
+   return mNavigator;
+ }
+ 
++void nsPIDOMWindowInner::ClearNavigatorCache() {
++  if (mNavigator) {
++    mNavigator->Invalidate();
++    mNavigator = nullptr;
++  }
++}
++
+ MediaDevices* nsPIDOMWindowInner::GetExtantMediaDevices() const {
+   return mNavigator ? mNavigator->GetExtantMediaDevices() : nullptr;
+ }
+diff --git a/dom/base/nsPIDOMWindow.h b/dom/base/nsPIDOMWindow.h
+index 3ce338a6cd..16e8c20ebf 100644
+--- a/dom/base/nsPIDOMWindow.h
++++ b/dom/base/nsPIDOMWindow.h
+@@ -621,6 +621,7 @@ class nsPIDOMWindowInner : public mozIDOMWindow {
+   uint32_t GetMarkedCCGeneration() { return mMarkedCCGeneration; }
+ 
+   mozilla::dom::Navigator* Navigator();
++  void ClearNavigatorCache();  // Clear Navigator cache for dynamic config updates
+   mozilla::dom::MediaDevices* GetExtantMediaDevices() const;
+   virtual mozilla::dom::Location* Location() = 0;
+ 
+diff --git a/dom/chrome-webidl/ChromeUtils.webidl b/dom/chrome-webidl/ChromeUtils.webidl
+index 75b7db9cb3..2b6280dd0a 100644
+--- a/dom/chrome-webidl/ChromeUtils.webidl
++++ b/dom/chrome-webidl/ChromeUtils.webidl
+@@ -826,6 +826,13 @@ partial namespace ChromeUtils {
+   [ChromeOnly]
+   undefined camouUpdateConfig(DOMString jsonText);
+ 
++  /**
++   * Force refresh Navigator properties after config update.
++   * This clears JavaScript-level caching of navigator object.
++   */
++  [ChromeOnly]
++  undefined camouRefreshNavigator();
++
+   /**
+    * Get a list of all possible Utility process Actor Names ; mostly useful to
+    * perform testing and ensure about:processes display is sound and misses no
