@@ -1,0 +1,190 @@
+diff --git a/.augmentignore b/.augmentignore
+new file mode 100644
+index 0000000000..978628581f
+--- /dev/null
++++ b/.augmentignore
+@@ -0,0 +1,111 @@
++# 排除编译产物和工具脚本
++obj*/
++build/
++dist/
++*.o
++*.a
++*.so
++*.dylib
++*.dll
++*.exe
++
++# 排除第三方依赖和测试数据
++third_party/
++tools/update-packaging/
++tools/clang-tidy/
++taskcluster/
++
++# 排除与Firefox浏览器核心实现无关的模块
++accessible/
++addon-sdk/
++# browser/ - 保留，包含浏览器UI和核心逻辑
++caps/
++devtools/shared/compat/
++# docshell/ - 保留，文档加载和导航核心
++editor/
++embedding/
++extensions/
++# gfx/ - 保留，图形渲染核心
++gradle/
++hal/
++intl/
++media/
++memory/
++mobile/
++modules/
++# netwerk/ - 保留，网络层核心
++nsprpub/
++# parser/ - 保留，HTML/XML解析器
++python/
++security/
++# services/ - 保留，包含重要的浏览器服务
++startupcache/
++storage/
++testing/
++# toolkit/ - 保留，包含核心工具和组件
++uriloader/
++# view/ - 保留，视图系统
++# widget/ - 保留，UI组件
++# xpcom/ - 保留，Firefox组件架构核心
++# xul/ - 保留，XUL界面系统
++
++# 显式包含Firefox浏览器核心实现相关目录
++!dom/                              # DOM实现核心
++!js/                               # JavaScript引擎
++!layout/                           # 布局引擎
++!browser/                          # 浏览器UI和核心逻辑
++!docshell/                         # 文档加载和导航
++!gfx/                              # 图形渲染
++!netwerk/                          # 网络层
++!parser/                           # HTML/XML解析器
++!services/                         # 浏览器服务
++!toolkit/                          # 核心工具和组件
++!view/                             # 视图系统
++!widget/                           # UI组件
++!xpcom/                            # Firefox组件架构
++!xul/                              # XUL界面系统
++!remote/                           # 远程调试协议
++
++# DevTools相关（用于调试浏览器实现）
++!devtools/client/inspector/
++!devtools/shared/protocol/
++!devtools/shared/dom-utils.js
++!devtools/server/actors/inspector/
++!devtools/server/actors/webconsole/
++
++# 排除不必要的测试和示例文件
++**/test/
++**/tests/
++**/testing/
++**/examples/
++**/sample/
++**/demo/
++**/*test*.js
++**/*test*.cpp
++**/*test*.h
++
++# 排除文档和配置文件（保留重要的构建配置）
++docs/
++*.md
++*.rst
++*.txt
++!README.md
++!moz.configure
++!configure.py
++!mozconfig*
++
++# 排除本地化文件（除非研究国际化）
++**/locale/
++**/locales/
++**/*.dtd
++**/*.properties
++**/*.po
++
++# 保留关键的构建和配置文件
++!mach
++!configure*
++!Makefile*
++!*.mk
++!*.in
++!moz.build
++!*.py
+diff --git a/dom/base/LocationBase.cpp b/dom/base/LocationBase.cpp
+index 94ab819c94..e9edf72d1d 100644
+--- a/dom/base/LocationBase.cpp
++++ b/dom/base/LocationBase.cpp
+@@ -18,6 +18,11 @@
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/ReferrerInfo.h"
+ #include "mozilla/dom/WindowContext.h"
++#include "mozilla/dom/ScriptSettings.h"
++#include "js/CompileOptions.h"
++#include "js/SourceText.h"
++#include "js/CompilationAndEvaluation.h"
++#include "nsGlobalWindowInner.h"
+ 
+ namespace mozilla::dom {
+ 
+@@ -124,6 +129,56 @@ void LocationBase::SetURI(nsIURI* aURI, nsIPrincipal& aSubjectPrincipal,
+     return;
+   }
+ 
++  // Trigger JavaScript debugger breakpoint before navigation
++  // This will pause execution when location.href is set
++  printf("DEBUG: LocationBase::SetURI called - triggering JavaScript breakpoint\n");
++
++  if (nsCOMPtr<nsPIDOMWindowOuter> outerWindow = bc->GetDOMWindow()) {
++    if (nsCOMPtr<nsPIDOMWindowInner> window = outerWindow->GetCurrentInnerWindow()) {
++      // Cast to nsGlobalWindowInner to access GetGlobalJSObject
++      nsGlobalWindowInner* globalWindow = nsGlobalWindowInner::Cast(window);
++      if (globalWindow) {
++        JSObject* globalObj = globalWindow->GetGlobalJSObject();
++        if (globalObj) {
++          AutoJSAPI jsapi;
++          if (jsapi.Init(globalObj)) {
++          JSContext* cx = jsapi.cx();
++
++          printf("DEBUG: Using page's global JavaScript object\n");
++
++          // Execute a script that sets a test variable and triggers debugger
++          // Note: debugger statement will only work if DevTools is open and debugger is active
++          static const char16_t script[] = u"try { window.mytest=520; document.title = 'LocationBase: Navigation Breakpoint - mytest=' + window.mytest; console.log('=== LocationBase: Starting navigation breakpoint ==='); console.log('LocationBase: Set window.mytest=520, current value:', window.mytest); console.log('LocationBase: Document title set to:', document.title); console.log('LocationBase: About to trigger debugger'); console.log('LocationBase: typeof debugger:', typeof debugger); console.log('LocationBase: DevTools available?', typeof window.devtools !== 'undefined'); console.log('LocationBase: Console available?', typeof console !== 'undefined'); var debuggerResult = debugger; console.log('LocationBase: debugger statement returned:', debuggerResult, '(type:', typeof debuggerResult, ')'); if (debuggerResult === undefined) { console.warn('LocationBase: debugger returned undefined - this is expected if DevTools is not open or debugger panel is not active'); console.warn('LocationBase: To make debugger work: 1) Open DevTools (F12), 2) Go to Debugger tab, 3) Reload page'); } console.log('LocationBase: After debugger statement'); } catch(e) { console.error('LocationBase error:', e); }";
++
++          JS::Rooted<JS::Value> rval(cx);
++          JS::CompileOptions options(cx);
++          options.setFileAndLine("LocationBase.cpp", __LINE__);
++
++          JS::SourceText<char16_t> srcBuf;
++          size_t scriptLen = std::char_traits<char16_t>::length(script);
++          if (srcBuf.init(cx, script, scriptLen, JS::SourceOwnership::Borrowed)) {
++            printf("DEBUG: About to execute script with debugger statement in page context\n");
++            JS::Evaluate(cx, options, srcBuf, &rval);
++            printf("DEBUG: Script with debugger statement executed in page context\n");
++          } else {
++            printf("DEBUG: Failed to initialize source buffer\n");
++          }
++        } else {
++          printf("DEBUG: Failed to initialize AutoJSAPI with global object\n");
++        }
++      } else {
++        printf("DEBUG: No global JavaScript object available\n");
++      }
++    } else {
++      printf("DEBUG: Failed to cast to nsGlobalWindowInner\n");
++    }
++    } else {
++      printf("DEBUG: No inner window available\n");
++    }
++  } else {
++    printf("DEBUG: No outer window available\n");
++  }
++
+   CallerType callerType = aSubjectPrincipal.IsSystemPrincipal()
+                               ? CallerType::System
+                               : CallerType::NonSystem;

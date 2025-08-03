@@ -1,0 +1,147 @@
+# Camoufox 135.0.1 项目 Cursor 索引配置
+
+# 排除编译产物和工具脚本
+obj*/
+build/
+dist/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.zip
+*.tar.xz
+
+# 排除第三方依赖和不必要的工具
+third_party/
+tools/update-packaging/
+tools/clang-tidy/
+taskcluster/
+pythonlib/
+legacy/
+bundle/
+
+# 排除测试和示例文件
+**/test/
+**/tests/
+**/testing/
+**/examples/
+**/sample/
+**/demo/
+**/*test*.js
+**/*test*.cpp
+**/*test*.h
+tests/
+
+# 排除文档和配置文件（保留重要的构建配置）
+docs/
+*.md
+*.rst
+*.txt
+
+# 排除本地化文件
+**/locale/
+**/locales/
+**/*.dtd
+**/*.properties
+**/*.po
+
+# 排除Git和临时文件
+.git/
+.github/
+*.log
+*.tmp
+123.txt
+456.txt
+upstream.sh
+
+# === Camoufox 135.0.1-beta.24 核心索引 ===
+
+# 排除 camoufox 目录中与浏览器核心实现无关的模块
+camoufox-135.0.1-beta.24/accessible/
+camoufox-135.0.1-beta.24/addon-sdk/
+camoufox-135.0.1-beta.24/caps/
+camoufox-135.0.1-beta.24/devtools/shared/compat/
+camoufox-135.0.1-beta.24/editor/
+camoufox-135.0.1-beta.24/embedding/
+camoufox-135.0.1-beta.24/extensions/
+camoufox-135.0.1-beta.24/gradle/
+camoufox-135.0.1-beta.24/hal/
+camoufox-135.0.1-beta.24/intl/
+camoufox-135.0.1-beta.24/media/
+camoufox-135.0.1-beta.24/memory/
+camoufox-135.0.1-beta.24/mobile/
+camoufox-135.0.1-beta.24/modules/
+camoufox-135.0.1-beta.24/nsprpub/
+camoufox-135.0.1-beta.24/python/
+camoufox-135.0.1-beta.24/security/
+camoufox-135.0.1-beta.24/startupcache/
+camoufox-135.0.1-beta.24/storage/
+camoufox-135.0.1-beta.24/testing/
+camoufox-135.0.1-beta.24/uriloader/
+
+# 排除 camoufox 目录中的编译产物
+camoufox-135.0.1-beta.24/obj*/
+camoufox-135.0.1-beta.24/build/
+camoufox-135.0.1-beta.24/dist/
+
+# 排除JSON和其他非核心目录
+jsonvv/
+
+# === 显式包含核心目录（确保被索引）===
+
+# 显式包含 Camoufox 浏览器核心实现相关目录
+!camoufox-135.0.1-beta.24/dom/                    # DOM实现核心
+!camoufox-135.0.1-beta.24/js/                     # JavaScript引擎
+!camoufox-135.0.1-beta.24/layout/                 # 布局引擎
+!camoufox-135.0.1-beta.24/browser/                # 浏览器UI和核心逻辑
+!camoufox-135.0.1-beta.24/docshell/               # 文档加载和导航
+!camoufox-135.0.1-beta.24/gfx/                    # 图形渲染
+!camoufox-135.0.1-beta.24/netwerk/                # 网络层
+!camoufox-135.0.1-beta.24/parser/                 # HTML/XML解析器
+!camoufox-135.0.1-beta.24/services/               # 浏览器服务
+!camoufox-135.0.1-beta.24/toolkit/                # 核心工具和组件
+!camoufox-135.0.1-beta.24/view/                   # 视图系统
+!camoufox-135.0.1-beta.24/widget/                 # UI组件
+!camoufox-135.0.1-beta.24/xpcom/                  # Firefox组件架构
+!camoufox-135.0.1-beta.24/xul/                    # XUL界面系统
+!camoufox-135.0.1-beta.24/remote/                 # 远程调试协议
+
+# DevTools相关（用于调试浏览器实现）
+!camoufox-135.0.1-beta.24/devtools/client/inspector/
+!camoufox-135.0.1-beta.24/devtools/shared/protocol/
+!camoufox-135.0.1-beta.24/devtools/shared/dom-utils.js
+!camoufox-135.0.1-beta.24/devtools/server/actors/inspector/
+!camoufox-135.0.1-beta.24/devtools/server/actors/webconsole/
+
+# 保留关键的构建和配置文件
+!camoufox-135.0.1-beta.24/mach
+!camoufox-135.0.1-beta.24/configure*
+!camoufox-135.0.1-beta.24/Makefile*
+!camoufox-135.0.1-beta.24/*.mk
+!camoufox-135.0.1-beta.24/*.in
+!camoufox-135.0.1-beta.24/moz.build
+!camoufox-135.0.1-beta.24/*.py
+!camoufox-135.0.1-beta.24/moz.configure
+!camoufox-135.0.1-beta.24/configure.py
+!camoufox-135.0.1-beta.24/mozconfig*
+
+# === 项目其他核心目录索引 ===
+
+# 包含项目相关的重要目录
+!dom/                           # 项目DOM相关代码
+!scripts/                       # 构建脚本
+!patches/                       # 补丁文件
+!settings/                      # 设置文件
+!additions/                     # 自定义添加的代码
+!assets/                        # 资源文件
+
+# 保留重要的构建和配置文件
+!multibuild.py
+!.gitignore
+!.gitattributes
+!README.md
+!Makefile
+!Dockerfile
+!LICENSE
